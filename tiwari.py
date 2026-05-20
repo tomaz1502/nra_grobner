@@ -21,6 +21,8 @@ Method:
 from sympy import Symbol, symbols, Poly, groebner, S, Rational, expand
 from itertools import count
 
+VERBOSE = False
+
 
 class TiwariSolver:
     def __init__(self, variables):
@@ -89,9 +91,11 @@ class TiwariSolver:
         return coeff != 0 and self._is_strictly_pos(monom)
 
     def _try_detect(self, gb_polys):
-        """Detect: if all terms of a poly are positive (or all negative) over
-        [V>=0], split them -- each must individually be zero."""
+        """Detect: for every poly whose terms are all positive (or all negative)
+        over [V>=0], split it -- each term must individually be zero.
+        Returns a list of (index, split_terms) pairs."""
         av = self.all_vars
+        candidates = []
         for i, expr in enumerate(gb_polys):
             p = Poly(expr, *av, domain='QQ')
             d = p.as_dict()
@@ -102,8 +106,8 @@ class TiwariSolver:
             coeffs = list(d.values())
             if all(c > 0 for c in coeffs) or all(c < 0 for c in coeffs):
                 terms = [c * self._to_expr(m) for m, c in d.items()]
-                return i, terms
-        return None, None
+                candidates.append((i, terms))
+        return candidates
 
     def _try_extend1(self, gb_polys):
         """Extend1: for a GB poly whose leading monomial mu0 is in [V>=0],
@@ -133,8 +137,8 @@ class TiwariSolver:
 
     # -- main loop --
 
-    def solve(self, max_rounds=20, verbose=True):
-        log = (lambda *a: print(*a)) if verbose else (lambda *_: None)
+    def solve(self, max_rounds=20):
+        log = (lambda *a: print(*a)) if VERBOSE else (lambda *_: None)
         log("Tiwari UNSAT procedure (Extend1 only)")
         log(f"  vars : {self.orig_vars}")
         log(f"  V>0  : {sorted(self.V_pos, key=str)}")
@@ -146,37 +150,40 @@ class TiwariSolver:
             log(f"\n--- Round {rnd} ---")
 
             gb = groebner(self.polys, *av, order='lex', domain='QQ')
-            gb_polys = list(gb)
-            self.polys = list(gb_polys)
-            log(f"  GB: {gb_polys}")
+            gb_exprs = list(gb)
+            self.polys = list(gb_exprs)
+            log(f"  GB: {gb_exprs}")
 
             # nonzero constant in GB => trivially UNSAT
-            for p in gb_polys:
+            for p in gb_exprs:
                 pp = Poly(p, *av, domain='QQ')
                 if pp.is_ground and not pp.is_zero:
                     log(f"  UNSAT: nonzero constant {p} in GB")
                     return True
 
             # Witness
-            for p in gb_polys:
+            for p in gb_exprs:
                 if self._check_witness(p):
                     log(f"  UNSAT (Witness): {p}")
                     return True
 
             # Detect
-            idx, terms = self._try_detect(gb_polys)
-            if idx is not None:
-                log(f"  Detect: {gb_polys[idx]}  ->  {terms}")
-                self.polys.pop(idx)
-                self.polys.extend(terms)
-                for t in terms:
+            candidates = self._try_detect(gb_exprs)
+            if candidates:
+                all_terms = []
+                for idx, terms in sorted(candidates, key=lambda c: -c[0]):
+                    log(f"  Detect: {gb_exprs[idx]}  ->  {terms}")
+                    self.polys.pop(idx)
+                    self.polys.extend(terms)
+                    all_terms.extend(terms)
+                for t in all_terms:
                     if self._check_witness(t):
                         log(f"  UNSAT (Witness after Detect): {t}")
                         return True
                 continue
 
             # Extend1
-            e = self._try_extend1(gb_polys)
+            e = self._try_extend1(gb_exprs)
             if e is not None:
                 log(f"  Extend1: {e} := {self.definitions[e]}")
                 continue
@@ -275,8 +282,8 @@ def example_satisfiable():
 
 if __name__ == '__main__':
     examples = [
-        # example_simple,
-        example_paper_2,
+        example_simple,
+        # example_paper_2,
         # example_paper_4,
         # example_quadratic,
         # example_sum_positive,
