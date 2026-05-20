@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Tiwari's algebraic unsatisfiability procedure (CSL 2005)
-restricted to the Extend1 rule on nonnegative monomials.
+Tiwari's algebraic unsatisfiability procedure (CSL 2005),
+with Extend1 and Extend3.  Extend2 (introduces a symbolic rational alpha
+and works over Q(alpha)) is not implemented.
 
 Given:  {p_i = 0} AND {q_j > 0} AND {r_k >= 0}
 Goal:   Detect unsatisfiability over the reals.
@@ -12,10 +13,12 @@ Method:
   3. Detect: split polynomials whose terms are all positive (or all negative)
      over nonneg variables -- since the sum is 0, each term must be 0.
   4. Witness: a single nonzero monomial in strictly-positive vars -> contradiction.
-  5. Extend1: if the leading monomial of a GB element is a product of nonneg
-     variables, introduce a fresh nonneg variable equal to it. This shrinks the
-     leading term, exposing inner monomials for critical-pair overlap.
-  Repeat 2-5 until UNSAT or no progress.
+  5. Extend1: if the leading monomial mu0 of a GB element is a product of
+     nonneg variables, introduce a fresh nonneg variable e := mu0.
+  6. Extend3: otherwise, name a "square-root-like" power-product nu0 (|nu0| > 1)
+     such that nu0^2 * nu0' = mu0 * mu0' for some squarefree nonneg nu0'.
+     The fresh variable x' := nu0 is unrestricted (not in V>=0).
+  Repeat 2-6 until UNSAT or no progress.
 """
 
 from sympy import Symbol, symbols, Poly, groebner, S, Rational, expand
@@ -135,9 +138,43 @@ class TiwariSolver:
             return e
         return None
 
+    def _try_extend3(self, gb_polys, max_degree=None):
+        """Extend3: introduce a fresh unrestricted variable x' = nu0, where
+        nu0 is a power-product with |nu0| > 1 satisfying nu0^2 * nu0' = mu0 * mu0'
+        for some GB poly with leading monomial mu0, nu0' squarefree over V>=0.
+
+        We pick the minimal such nu0 per polynomial: for each variable i with
+        exponent m_i in mu0, n_i = m_i // 2 if i in V>=0 else ceil(m_i / 2).
+        The V>=0 case absorbs one extra exponent into nu0' when m_i is odd."""
+        av = self.all_vars
+        existing_defs = set(self.definitions.values())
+        for expr in gb_polys:
+            p = Poly(expr, *av, domain='QQ')
+            if len(p.as_dict()) <= 1:
+                continue
+            lm = p.LM()
+            n = tuple(
+                m_i // 2 if av[i] in self.V_nonneg else (m_i + 1) // 2
+                for i, m_i in enumerate(lm)
+            )
+            if sum(n) <= 1:
+                continue
+            if max_degree is not None and sum(n) > max_degree:
+                continue
+            nu_expr = self._to_expr(n)
+            if nu_expr in existing_defs:
+                continue
+            eid = next(self._ext_id)
+            x_new = Symbol(f'e{eid}')
+            self.ext_vars.append(x_new)
+            self.definitions[x_new] = nu_expr
+            self.polys.append(nu_expr - x_new)
+            return x_new
+        return None
+
     # -- main loop --
 
-    def solve(self, max_rounds=20):
+    def solve(self, max_rounds=10):
         log = (lambda *a: print(*a)) if VERBOSE else (lambda *_: None)
         log("Tiwari UNSAT procedure (Extend1 only)")
         log(f"  vars : {self.orig_vars}")
@@ -186,6 +223,12 @@ class TiwariSolver:
             e = self._try_extend1(gb_exprs)
             if e is not None:
                 log(f"  Extend1: {e} := {self.definitions[e]}")
+                continue
+
+            # Extend3
+            e = self._try_extend3(gb_exprs)
+            if e is not None:
+                log(f"  Extend3: {e} := {self.definitions[e]}")
                 continue
 
             log("  No rules applicable.")
